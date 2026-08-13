@@ -533,23 +533,91 @@ function speakNow(){
   speakThenCount(curQ.spk);
 }
 
-// ── QUESTION SELECTION ──
-function pickQ(){
-  // gather eligible categories
-  const cats=[...activeCats];
-  if(!cats.length)return null;
+// ── PROCEDURAL MATH GENERATION ──
+function rnd(a,b){return Math.floor(Math.random()*(b-a+1))+a;}
+function genMathQ(){
+  // weighted pick: 50% add/sub, 30% multiply, 20% divide
+  const r=Math.random();
   const diffIdx=DIFF_LEVELS.indexOf(diff);
-  // shuffle category pick
-  const cat=cats[Math.floor(Math.random()*cats.length)];
-  const pool=QB[cat].filter(q=>{
-    const qi=DIFF_LEVELS.indexOf(q.d);
-    return qi<=diffIdx; // include easier questions too
-  });
-  if(!pool.length)return pickQ(); // retry if empty
-  const q={...pool[Math.floor(Math.random()*pool.length)]};
-  q.cat=cat;
-  q.qtype=CAT_META[cat].type; // 'math' or 'voice'
-  if(!q.html)q.html=q.q; // fallback display
+
+  if(r<0.50){
+    // add or subtract 3-digit numbers
+    const op=Math.random()<0.5?'add':'sub';
+    if(op==='add'){
+      const a=rnd(100,999),b=rnd(100,999);
+      return{cat:'math',qtype:'math',
+        q:`${a} + ${b}`,
+        html:`${a} <span class="op">+</span> ${b} <span class="eq">=</span> ?`,
+        ans:a+b, spk:`${a} plus ${b}`};
+    } else {
+      const a=rnd(200,999),b=rnd(100,a-1);
+      return{cat:'math',qtype:'math',
+        q:`${a} − ${b}`,
+        html:`${a} <span class="op">−</span> ${b} <span class="eq">=</span> ?`,
+        ans:a-b, spk:`${a} minus ${b}`};
+    }
+  } else if(r<0.80){
+    // multiply 2-digit × 2-digit (hard: bigger range)
+    const lo=diffIdx>=2?25:10, hi=diffIdx>=2?99:99;
+    const a=rnd(lo,hi), b=rnd(lo,hi);
+    return{cat:'math',qtype:'math',
+      q:`${a} × ${b}`,
+      html:`${a} <span class="op">×</span> ${b} <span class="eq">=</span> ?`,
+      ans:a*b, spk:`${a} times ${b}`};
+  } else {
+    // exact division — pick divisor then quotient, build dividend
+    // easy: 2-digit ÷ 1-digit, normal: 3-digit ÷ 1-digit, hard: 3-digit ÷ 2-digit
+    const bMin=diffIdx>=2?10:2, bMax=diffIdx>=2?49:9;
+    const aMin=diffIdx>=1?100:12, aMax=diffIdx>=1?999:99;
+    const b=rnd(bMin,bMax);
+    const qMin=Math.max(2,Math.ceil(aMin/b));
+    const qMax=Math.floor(aMax/b);
+    const q2=qMin<=qMax?rnd(qMin,qMax):rnd(2,9);
+    const a=b*q2;
+    return{cat:'math',qtype:'math',
+      q:`${a} ÷ ${b}`,
+      html:`${a} <span class="op">÷</span> ${b} <span class="eq">=</span> ?`,
+      ans:q2, spk:`${a} divided by ${b}`};
+  }
+}
+
+// ── QUESTION QUEUE (3-4 math, then 1 other, repeat) ──
+let qQueue=[], mathCountSinceBreak=0, mathBreakAt=3;
+function resetQueue(){
+  qQueue=[];mathCountSinceBreak=0;
+  mathBreakAt=rnd(3,4); // 3 or 4 math before a break
+}
+function pickQ(){
+  // If queue has items, pop first
+  if(qQueue.length>0) return qQueue.shift();
+
+  // Decide next batch: math block then 1 other
+  if(mathCountSinceBreak<mathBreakAt){
+    // give math question
+    mathCountSinceBreak++;
+    if(mathCountSinceBreak>=mathBreakAt){
+      // schedule a non-math question after this math one
+      const other=pickOtherQ();
+      if(other) qQueue.push(other);
+      mathCountSinceBreak=0;
+      mathBreakAt=rnd(3,4);
+    }
+    return genMathQ();
+  }
+  // fallback
+  return genMathQ();
+}
+function pickOtherQ(){
+  // pick from active non-math categories
+  const otherCats=[...activeCats].filter(c=>c!=='math');
+  if(!otherCats.length) return null;
+  const diffIdx=DIFF_LEVELS.indexOf(diff);
+  const cat=otherCats[rnd(0,otherCats.length-1)];
+  const pool=QB[cat].filter(q=>DIFF_LEVELS.indexOf(q.d)<=diffIdx);
+  if(!pool.length) return null;
+  const q={...pool[rnd(0,pool.length-1)]};
+  q.cat=cat; q.qtype=CAT_META[cat].type;
+  if(!q.html)q.html=q.q;
   return q;
 }
 
@@ -565,6 +633,7 @@ function startGame(){
   document.getElementById('bpm-lbl').textContent=bpm+' BPM';
   document.getElementById('metro-mode-lbl').textContent=modeLabel[metroMode]||'';
   pos=0;score=0;okC=0;errC=0;skipC=0;gameActive=true;
+  resetQueue();
   document.getElementById('overlay').style.display='none';
   document.getElementById('win').style.display='none';
   buildTrack();updStats();startMetro();newQ();
